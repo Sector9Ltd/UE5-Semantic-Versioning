@@ -9,10 +9,13 @@ inputs:
     description: 'The semantic versioning prefix to apply to the build. (dev, alpha, beta, rc, etc)'
     required: true
   CONFIG_DIR_PATH:
-    description: 'Full path to the MyProject/Config directory.'
-    required: true
+    description: 'Full path to the MyProject/Config directory. Required for a project; leave unset for a plugin and give UPLUGIN_PATH instead.'
+    required: false
+  UPLUGIN_PATH:
+    description: 'Full path to a .uplugin. Use this instead of CONFIG_DIR_PATH for a plugin: the version is read from VersionName and written back to it, so tags drive the version a packaged plugin ships with.'
+    required: false
   ADD_BUILD_INFO:
-    description: 'Add BuildInfo.ini (Contains build id) to config.'
+    description: 'Add BuildInfo.ini (Contains build id) to config. Ignored for a plugin, which has no Config directory.'
     default: true
   USE_RELEASE_BUILD:
     description: 'Use release build (true or false). If true, uses the release tag as BUILD_ID.'
@@ -29,26 +32,51 @@ runs:
         $tags = git tag --sort=-v:refname
         Write-Host "Tags found: $tags"
         
-        $iniPath = "${{ inputs.CONFIG_DIR_PATH }}/DefaultGame.ini"
-        $content = Get-Content $iniPath -Raw
-        Write-Host "INI file content: $content"
-        
-        $semVerPattern = 'ProjectVersion=([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)'
-        $buildIdPattern = 'ProjectBuildId=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
+        $configDir = "${{ inputs.CONFIG_DIR_PATH }}"
+        $upluginPath = "${{ inputs.UPLUGIN_PATH }}"
+
+        if ($configDir -and $upluginPath) {
+          throw "Give CONFIG_DIR_PATH or UPLUGIN_PATH, not both: they name two different places to read the version from."
+        }
+        if (-not $configDir -and -not $upluginPath) {
+          throw "Give CONFIG_DIR_PATH (a project) or UPLUGIN_PATH (a plugin)."
+        }
+
+        $isPlugin = [bool]$upluginPath
 
         $defaultBuildId = "0.0.0.0"
         $defaultVersion = "0.0.0.0"
 
-        if ($content -match $buildIdPattern) {
-          $defaultBuildId = $matches[1]
-          Write-Host "Found ProjectBuildId in INI: $defaultBuildId"
+        if ($isPlugin) {
+          # A plugin keeps its version in the descriptor, not in Config/DefaultGame.ini - it has no Config
+          # directory at all. VersionName is the semver string; Version is the integer UE compares.
+          if (-not (Test-Path -LiteralPath $upluginPath)) { throw "UPLUGIN_PATH not found: $upluginPath" }
+          $content = Get-Content -LiteralPath $upluginPath -Raw
+          Write-Host "Plugin descriptor: $upluginPath"
+
+          if ($content -match '"VersionName"\s*:\s*"([0-9]+\.[0-9]+(\.[0-9]+)?(\.[0-9]+)?)"') {
+            $defaultVersion = $matches[1]
+            Write-Host "Found VersionName in descriptor: $defaultVersion"
+          }
+        } else {
+          $iniPath = "$configDir/DefaultGame.ini"
+          $content = Get-Content $iniPath -Raw
+          Write-Host "INI file content: $content"
+
+          $semVerPattern = 'ProjectVersion=([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)'
+          $buildIdPattern = 'ProjectBuildId=([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)'
+
+          if ($content -match $buildIdPattern) {
+            $defaultBuildId = $matches[1]
+            Write-Host "Found ProjectBuildId in INI: $defaultBuildId"
+          }
+
+          if ($content -match $semVerPattern) {
+            $defaultVersion = $matches[1]
+            Write-Host "Found ProjectVersion in INI: $defaultVersion"
+          }
         }
-        
-        if ($content -match $semVerPattern) {
-          $defaultVersion = $matches[1]
-          Write-Host "Found ProjectVersion in INI: $defaultVersion"
-        }
-        
+
         if ($isReleaseBuild -and $releaseTag) {
           # Use release tag for version and build ID, supporting both version formats
           $buildId = $releaseTag
@@ -94,13 +122,36 @@ runs:
           $buildId = "$newVersion-${{ inputs.BUILD_PREFIX }}$commitCount"
         }
         
+        if ($isPlugin) {
+          # Write it back, which is the whole point for a plugin: RunUAT BuildPlugin packages whatever the
+          # descriptor says, and the packaged zip is conventionally named from VersionName. A project's
+          # version is only reported; a plugin's has to land in the file that ships.
+          $parts = ($newVersion -split '\.')
+          while ($parts.Length -lt 3) { $parts += '0' }
+
+          # UE compares the integer Version, not the string, so it has to move with it and never backwards.
+          $computed = [int]$parts[0] * 10000 + [int]$parts[1] * 100 + [int]$parts[2]
+          $existing = 0
+          if ($content -match '"Version"\s*:\s*([0-9]+)') { $existing = [int]$matches[1] }
+          $versionInt = [Math]::Max($computed, $existing)
+
+          # Field-level replacements rather than ConvertTo-Json, which would reformat and reorder the whole
+          # descriptor and bury the one line that changed. "FileVersion" and "EngineVersion" do not match
+          # '"Version"', and neither does "VersionName".
+          $content = $content -replace '"VersionName"\s*:\s*"[^"]*"', "`"VersionName`": `"$newVersion`""
+          $content = $content -replace '"Version"\s*:\s*[0-9]+', "`"Version`": $versionInt"
+          Set-Content -LiteralPath $upluginPath -Value $content -NoNewline -Encoding utf8
+
+          Write-Host "Descriptor updated: VersionName $newVersion, Version $versionInt"
+        }
+
         echo "VERSION=$newVersion" >> $env:GITHUB_ENV
         echo "BUILD_ID=$buildId" >> $env:GITHUB_ENV
         Write-Host "Version set to: $newVersion"
         Write-Host "Build ID set to: $buildId"
       shell: powershell
     - name: Create BuildInfo Config
-      if: ${{ inputs.ADD_BUILD_INFO == 'true' }}
+      if: ${{ inputs.ADD_BUILD_INFO == 'true' && inputs.UPLUGIN_PATH == '' }}
       run: |
         $buildInfoPath = "${{ inputs.CONFIG_DIR_PATH }}/BuildInfo.ini"
         $buildId = "${{ env.BUILD_ID }}"
