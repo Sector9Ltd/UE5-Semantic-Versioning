@@ -21,9 +21,46 @@ The action performs the following steps:
 ## Inputs
 
 -   `BUILD_PREFIX`: The prefix to apply to the build number (e.g., `dev`, `alpha`, `beta`, `rc`).
--   `CONFIG_DIR_PATH`: The full path to the `MyProject/Config` folder, including the path to the GitHub workspace.
--   `ADD_BUILD_INFO`: Adds a `BuildInfo.ini` file containing the Build ID to the `MyProject/Config` folder.
+-   `CONFIG_DIR_PATH`: The full path to the `MyProject/Config` folder, including the path to the GitHub workspace. For a project. Mutually exclusive with `UPLUGIN_PATH`.
+-   `UPLUGIN_PATH`: The full path to a `.uplugin`. For a plugin. Mutually exclusive with `CONFIG_DIR_PATH`.
+-   `ADD_BUILD_INFO`: Adds a `BuildInfo.ini` file containing the Build ID to the `MyProject/Config` folder. Ignored for a plugin.
 -   `USE_RELEASE_BUILD`: Specifies whether to use the release build logic (`true` or `false`). If `true`, the action uses the GitHub release tag as the build version.
+
+## Plugins
+
+A plugin has no `Config/DefaultGame.ini`. Its version lives in the descriptor, so pass
+`UPLUGIN_PATH` instead and the action reads `VersionName` in place of `ProjectVersion`.
+
+For a plugin the version is also **written back** to the descriptor. That is the point: `RunUAT
+BuildPlugin` packages whatever the descriptor says, and the packaged zip is conventionally named
+from `VersionName`, so a tag can only reach a release if it lands in the file that ships. A
+project's version is reported and not written, and that is unchanged.
+
+Both fields move together, because UE compares the integer `Version`, not the string:
+
+| Field | Written as |
+| --- | --- |
+| `VersionName` | the computed semver string, e.g. `2.3.1` |
+| `Version` | `major * 10000 + minor * 100 + patch`, e.g. `20301`, and never lower than what was there |
+
+The two fields are replaced in place rather than by re-serialising the JSON, so the diff is the two
+lines that changed and the rest of the descriptor keeps its formatting and key order.
+
+``` yaml
+- name: Set Plugin Version
+  uses: Sector9Ltd/UE5-Semantic-Versioning@latest
+  with:
+    BUILD_PREFIX: dev
+    UPLUGIN_PATH: ${{ github.workspace }}/MyPlugin/MyPlugin.uplugin
+    USE_RELEASE_BUILD: false
+
+- uses: Sector9Ltd/UE5-Build-Plugin@v1
+  with:
+    RUNUAT_PATH: ${{ env.RUNUAT }}
+    UPLUGIN_PATH: ${{ github.workspace }}/MyPlugin/MyPlugin.uplugin
+    PACKAGE_PATH: ${{ runner.temp }}/PluginBuild
+    ARCHIVE: 'true'
+```
 
 ## Using the Action
 
