@@ -1,6 +1,6 @@
 name: 'UE5-Semantic-Versioning'
 description: 'Fetches tags and calculates version and build number from an INI file.'
-author: 'Orchid Isle Games'
+author: 'Sector 9, Ltd.'
 branding:
   icon: 'anchor'
   color: 'green' # You can use a specific shade of green like '008000' if you prefer
@@ -97,8 +97,9 @@ runs:
             $latestTag = $defaultBuildId
             $commitCount = 0
           } else {
-            $latestTag = $latestTag -replace '^v', ''
+            # Count against the tag as written: a v-prefixed tag does not resolve without its v.
             $commitCount = & git rev-list --count "${latestTag}..HEAD"
+            $latestTag = $latestTag -replace '^v', ''
           }
           
           $newVersion = $defaultVersion

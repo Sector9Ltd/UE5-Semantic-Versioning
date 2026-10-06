@@ -1,105 +1,69 @@
 # UE5-Semantic-Versioning
 
-This GitHub Action fetches Git tags and calculates the version and build number for Unreal Engine projects by reading the project version from an INI file. It supports both regular development builds and release builds by optionally using the release tag for versioning.
+Work out the version and build number from Git tags and the project or plugin version.
 
-## How it Works
-
-The action performs the following steps:
-
-1.  Fetches all Git tags available in the repository.
-2.  Reads the specified INI file to extract the project's version.
-3.  For release builds, it uses the GitHub release tag as the `BUILD_ID` and sets `VERSION` to major.minor.patch format.
-4.  For non-release builds, it identifies the latest Git tag that matches a Semantic Versioning pattern and calculates the number of commits since the latest identified version tag.
-5.  Outputs the new version and build ID, considering the provided build prefix, commit count, and whether it's a release build.
+By [Sector 9](https://sector9.ltd). [Tool page](https://sector9.ltd/ue5-tools/semantic-versioning) | [Documentation](https://sector9.ltd/docs/ue5-tools/semantic-versioning/)
 
 ## Requirements
 
--   The repository must have an initial semantic tag of at least `0.0.0`.
--   The INI file referenced should contain the project version in the correct format, typically found in `DefaultGame.ini`.
--   For non-release builds, build prefixes are added as part of your CI process.
+- A Windows runner. The steps use `shell: powershell`.
+- `git` available to that shell. The action runs `git fetch --tags`, `git tag` and `git rev-list`.
+- The repository checked out with its full history and tags. Use `actions/checkout@v4` with `fetch-depth: 0`: the action counts commits since the last tag, and a shallow checkout does not hold them.
+- A `DefaultGame.ini` (project) or a `.uplugin` (plugin) at the path you give.
+
+Unreal Engine is not needed.
+
+## Usage
+
+`BUILD_PREFIX` is required, and you must give exactly one of `CONFIG_DIR_PATH` (a project) or `UPLUGIN_PATH` (a plugin).
+
+```yaml
+jobs:
+  version:
+    runs-on: [self-hosted, Windows]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: Sector9Ltd/UE5-Semantic-Versioning@0.4.0
+        with:
+          BUILD_PREFIX: dev
+          CONFIG_DIR_PATH: ${{ github.workspace }}\MyProject\Config
+
+      - run: echo "Building ${{ env.BUILD_ID }}"
+        shell: powershell
+```
 
 ## Inputs
 
--   `BUILD_PREFIX`: The prefix to apply to the build number (e.g., `dev`, `alpha`, `beta`, `rc`).
--   `CONFIG_DIR_PATH`: The full path to the `MyProject/Config` folder, including the path to the GitHub workspace. For a project. Mutually exclusive with `UPLUGIN_PATH`.
--   `UPLUGIN_PATH`: The full path to a `.uplugin`. For a plugin. Mutually exclusive with `CONFIG_DIR_PATH`.
--   `ADD_BUILD_INFO`: Adds a `BuildInfo.ini` file containing the Build ID to the `MyProject/Config` folder. Ignored for a plugin.
--   `USE_RELEASE_BUILD`: Specifies whether to use the release build logic (`true` or `false`). If `true`, the action uses the GitHub release tag as the build version.
+Inputs are set under `with:`. The action compares `USE_RELEASE_BUILD` and `ADD_BUILD_INFO` to the text `true`. Values are pasted into a PowerShell script between double quotes, so do not put a `"` in one.
 
-## Plugins
+| Name                | Required | Default | Description                                                                                                                                                |
+| ------------------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BUILD_PREFIX`      | Yes      | —       | Text placed before the commit count in `BUILD_ID`, such as `dev`, `alpha`, `beta` or `rc`. Used only on non-release runs.                                  |
+| `CONFIG_DIR_PATH`   | No       | —       | Full path to the project's `Config` directory. Use it for a project, and leave it unset for a plugin. Give this or `UPLUGIN_PATH`, never both.             |
+| `UPLUGIN_PATH`      | No       | —       | Full path to a `.uplugin`. Use it for a plugin. The version is read from `VersionName` and written back to it. Give this or `CONFIG_DIR_PATH`, never both. |
+| `ADD_BUILD_INFO`    | No       | `true`  | `true` writes `BuildInfo.ini` with the build ID into `CONFIG_DIR_PATH`. Ignored for a plugin, which has no `Config` directory.                             |
+| `USE_RELEASE_BUILD` | Yes      | `false` | `true` takes the version and build ID from the ref name, such as a release tag, instead of counting commits. See the documentation link below the table.                                    |
 
-A plugin has no `Config/DefaultGame.ini`. Its version lives in the descriptor, so pass
-`UPLUGIN_PATH` instead and the action reads `VersionName` in place of `ProjectVersion`.
-
-For a plugin the version is also **written back** to the descriptor. That is the point: `RunUAT
-BuildPlugin` packages whatever the descriptor says, and the packaged zip is conventionally named
-from `VersionName`, so a tag can only reach a release if it lands in the file that ships. A
-project's version is reported and not written, and that is unchanged.
-
-Both fields move together, because UE compares the integer `Version`, not the string:
-
-| Field | Written as |
-| --- | --- |
-| `VersionName` | the computed semver string, e.g. `2.3.1` |
-| `Version` | `major * 10000 + minor * 100 + patch`, e.g. `20301`, and never lower than what was there |
-
-The two fields are replaced in place rather than by re-serialising the JSON, so the diff is the two
-lines that changed and the rest of the descriptor keeps its formatting and key order.
-
-``` yaml
-- name: Set Plugin Version
-  uses: Sector9Ltd/UE5-Semantic-Versioning@latest
-  with:
-    BUILD_PREFIX: dev
-    UPLUGIN_PATH: ${{ github.workspace }}/MyPlugin/MyPlugin.uplugin
-    USE_RELEASE_BUILD: false
-
-- uses: Sector9Ltd/UE5-Build-Plugin@v1
-  with:
-    RUNUAT_PATH: ${{ env.RUNUAT }}
-    UPLUGIN_PATH: ${{ github.workspace }}/MyPlugin/MyPlugin.uplugin
-    PACKAGE_PATH: ${{ runner.temp }}/PluginBuild
-    ARCHIVE: 'true'
-```
-
-## Using the Action
-
-Add the following step to your workflow to use this action:
-
-``` yaml
-- name: Set Project Version and Build Number
-  uses: OrchidIsle/UE5-Semantic-Versioning@latest
-  with:
-    BUILD_PREFIX: dev
-    CONFIG_DIR_PATH: ${{ github.workspace }}/MyGameFolder/Config
-    ADD_BUILD_INFO: true
-    USE_RELEASE_BUILD: false` 
-```
+Commits are counted against the newest version tag as written, so `v1.2.3` tags count correctly. The step fails when both or neither of `CONFIG_DIR_PATH` and `UPLUGIN_PATH` are set. For a plugin, the version is written back to the `.uplugin` (`VersionName` and `Version`). For how the version is chosen, see the [documentation](https://sector9.ltd/docs/ue5-tools/semantic-versioning/inputs-and-outputs/).
 
 ## Outputs
 
--   `BUILD_ID`: Identifier for the build. For release builds, it's the release tag. For non-release builds, it includes the version number, build prefix, and commit count.
--   `VERSION`: The release version in Major.Minor.Patch format based on Semantic Versioning.
+The action declares no outputs. It sets two environment variables with `GITHUB_ENV`. Later steps in the same job read them as `${{ env.VERSION }}` and `${{ env.BUILD_ID }}`. They are not visible to the step itself or to other jobs.
 
-Example of using outputs in your workflow:
+| Variable   | Value                                                                                             |
+| ---------- | ------------------------------------------------------------------------------------------------- |
+| `VERSION`  | The computed version, such as `1.2.4`. On a release run, the ref name without its `v` and suffix. |
+| `BUILD_ID` | `<VERSION>-<BUILD_PREFIX><commit count>`, or the ref name as it is on a release run.              |
 
-``` yaml
-- name: Use Build ID
-  run: echo "The build ID is ${{ env.BUILD_ID }}"` 
-```
+## Other UE5 Tools
 
-```yaml
-- name: Use Version
-  run: echo "The next version is ${{ env.VERSION }}"` 
-```
-## Typical Usage
+- [UE5-Build-Project](https://github.com/Sector9Ltd/UE5-Build-Project): Build, cook, stage, package and archive an Unreal project with RunUAT.
+- [UE5-Build-Plugin](https://github.com/Sector9Ltd/UE5-Build-Plugin): Build and package an Unreal plugin with RunUAT BuildPlugin.
+- [UE5-EOS-Config](https://github.com/Sector9Ltd/UE5-EOS-Config): Write Epic Online Services settings into DefaultEngine.ini, with an optional dedicated-server config.
 
-Set the project settings version to the version you plan to release next. The action will output the appropriate build and version numbers based on your workflow configuration.
+## License
 
-## Additional Information
-
--   Use the actions/checkout step before this action to clone the repository.
--   Update the version in the INI file as part of your development process.
--   Visit SemVer.org for more information on Semantic Versioning.
-
-----------
+See [LICENSE](LICENSE).
